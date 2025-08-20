@@ -1,0 +1,26 @@
+/* --- Warranty form basic styles --- */
+:root { --fg:#111; --muted:#666; --border:#ddd; --bg:#fff; --accent:#000; }
+* { box-sizing: border-box; }
+body { color: var(--fg); background: var(--bg); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif; }
+
+.warranty-wrap { max-width: 720px; margin: 24px auto; padding: 20px; }
+.warranty-title { font-size: 24px; font-weight: 700; margin: 0 0 12px; }
+.warranty-sub { color: var(--muted); margin: 0 0 18px; }
+
+.warranty-form { border:1px solid var(--border); border-radius:12px; padding:18px; }
+.w-grid { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+.w-grid .span-2 { grid-column: span 2; }
+
+.w-field label { display:block; font-size: 14px; margin: 4px 0 6px; }
+.w-input, .w-select, .w-textarea, .w-file {
+  width:100%; border:1px solid var(--border); border-radius:8px; padding:10px; font-size:14px; background:#fff;
+}
+.w-select { height: 42px; }
+.w-textarea { min-height: 96px; resize: vertical; }
+.w-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+.w-btn {
+  appearance: none; border:0; border-radius:10px; padding:12px 16px; font-weight:600;
+  background: var(--accent); color:#fff; cursor:pointer;
+}
+.w-btn[disabled] { opacity:.6; cursor:not-allowed; }
