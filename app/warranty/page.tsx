@@ -6,7 +6,7 @@ import NextImage from "next/image";
 
 type FilePayload = { name: string; mimeType: string; content: string } | null;
 
-/** ย่อรูป → JPEG (รองรับมือถือ/iOS เก่า) */
+/** ย่อรูป → JPEG (รองรับ iPhone/Safari + มี fallback) */
 async function compressImageToBase64(
   file: File,
   opts: { maxW?: number; maxH?: number; quality?: number } = {}
@@ -20,10 +20,11 @@ async function compressImageToBase64(
     return { base64, mimeType: file.type || "application/octet-stream", name: file.name };
   }
 
-  // โหลดรูป (พยายามแก้ orientation)
+  // พยายามโหลดแบบแก้ EXIF orientation (บาง Safari ไม่รองรับ createImageBitmap ก็ try/catch)
   let bmp: ImageBitmap | null = null;
   try {
-    bmp = await createImageBitmap(file, { imageOrientation: "from-image" as any });
+    // @ts-ignore: imageOrientation อาจยังไม่มี type
+    bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
   } catch {
     bmp = null;
   }
@@ -36,18 +37,13 @@ async function compressImageToBase64(
       img.src = URL.createObjectURL(file);
     });
 
-  let srcW: number,
-    srcH: number,
-    draw: (ctx: CanvasRenderingContext2D) => void;
-
+  let srcW: number, srcH: number, draw: (ctx: CanvasRenderingContext2D) => void;
   if (bmp) {
-    srcW = bmp.width;
-    srcH = bmp.height;
+    srcW = bmp.width; srcH = bmp.height;
     draw = (ctx) => ctx.drawImage(bmp!, 0, 0, srcW, srcH);
   } else {
     const img = await loadImg();
-    srcW = img.naturalWidth;
-    srcH = img.naturalHeight;
+    srcW = img.naturalWidth; srcH = img.naturalHeight;
     draw = (ctx) => ctx.drawImage(img, 0, 0, srcW, srcH);
   }
 
@@ -56,35 +52,30 @@ async function compressImageToBase64(
   const outH = Math.max(1, Math.round(srcH * scale));
 
   const canvas = document.createElement("canvas");
-  canvas.width = outW;
-  canvas.height = outH;
+  canvas.width = outW; canvas.height = outH;
   const ctx = canvas.getContext("2d")!;
   draw(ctx);
 
-  // toBlob fallback (สำหรับ Safari/iOS)
+  // ✅ toBlob fallback สำหรับ Safari/iOS รุ่นเก่า (บางเครื่อง toBlob คืน null)
   async function canvasToBlobJPEG(c: HTMLCanvasElement, q: number): Promise<Blob> {
     if (c.toBlob) {
       return await new Promise<Blob>((resolve, reject) => {
-        c.toBlob(
-          (b) => (b ? resolve(b) : reject(new Error("toBlob returned null"))),
-          "image/jpeg",
-          q
-        );
+        c.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob returned null"))), "image/jpeg", q);
       });
     }
+    // fallback ผ่าน dataURL → Blob
     const dataURL = c.toDataURL("image/jpeg", q);
     const byteStr = atob(dataURL.split(",")[1]);
-    const len = byteStr.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) bytes[i] = byteStr.charCodeAt(i);
+    const bytes = new Uint8Array(byteStr.length);
+    for (let i = 0; i < byteStr.length; i++) bytes[i] = byteStr.charCodeAt(i);
     return new Blob([bytes], { type: "image/jpeg" });
   }
 
   let blob: Blob;
   try {
     blob = await canvasToBlobJPEG(canvas, quality);
-  } catch (e) {
-    console.error("compress fallback:", e);
+  } catch {
+    // สุดท้ายจริง ๆ ส่งไฟล์ต้นฉบับไปเพื่อไม่ให้ค้าง
     const buf = await file.arrayBuffer();
     const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
     return { base64, mimeType: file.type || "application/octet-stream", name: file.name };
@@ -101,19 +92,25 @@ async function compressImageToBase64(
 export default function WarrantyPage() {
   const [loading, setLoading] = useState(false);
   const [agree, setAgree] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const form = e.currentTarget;
 
-    const form = e.currentTarget; // เก็บไว้ใช้หลัง await
+    if (!agree) {
+      alert("กรุณาติ๊กยอมรับเงื่อนไขการรับประกันก่อนส่งแบบฟอร์ม");
+      return;
+    }
+
     const fd = new FormData(form);
 
-    // แนบหลักฐาน
+    // เตรียมไฟล์ (ย่อถ้าเป็นรูป)
     const raw = (fd.get("evidence") as File) || null;
     let filePayload: FilePayload = null;
     if (raw && raw.size > 0) {
       try {
-        const { base64, mimeType, name } = await compressImageToBase64(raw);
+        const { base64, mimeType, name } = await compressImageToBase64(raw, { maxW: 1200, maxH: 1200, quality: 0.8 });
         filePayload = { name, mimeType, content: base64 };
       } catch {
         const buf = await raw.arrayBuffer();
@@ -138,14 +135,14 @@ export default function WarrantyPage() {
       alert("กรุณากรอกข้อมูลที่มีเครื่องหมาย * และแนบหลักฐานให้ครบ");
       return;
     }
-    if (!agree) {
-      alert("กรุณาติ๊กยอมรับเงื่อนไขการรับประกันก่อนส่งแบบฟอร์ม");
-      return;
-    }
+
+    // ✅ กันค้างบนมือถือ: ใส่ timeout เวลา fetch
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 45_000); // 45 วินาที
 
     try {
       setLoading(true);
-      const res = await fetch("/api/warranty", { method: "POST", body: JSON.stringify(payload) });
+      const res = await fetch("/api/warranty", { method: "POST", body: JSON.stringify(payload), signal: ac.signal });
       if (!res.ok) throw new Error("network or server error");
       const text = await res.text();
       const json = JSON.parse(text);
@@ -156,8 +153,13 @@ export default function WarrantyPage() {
       setAgree(false);
     } catch (err: any) {
       console.error("submit error:", err);
-      alert("เกิดข้อผิดพลาดในการส่งข้อมูล: " + (err?.message || "unknown"));
+      const msg =
+        err?.name === "AbortError"
+          ? "หมดเวลารอการเชื่อมต่อ (timeout) โปรดลองอีกครั้ง"
+          : err?.message || "unknown";
+      alert("เกิดข้อผิดพลาดในการส่งข้อมูล: " + msg);
     } finally {
+      clearTimeout(t);
       setLoading(false);
     }
   }
@@ -224,6 +226,7 @@ export default function WarrantyPage() {
             <div className="w-hint">* ระบบจะย่อรูปอัตโนมัติก่อนอัปโหลด</div>
           </div>
 
+          {/* ยอมรับเงื่อนไข + เปิดป๊อปอัป */}
           <div className="w-field span-2" style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input
               id="agree"
@@ -231,9 +234,16 @@ export default function WarrantyPage() {
               checked={agree}
               onChange={(e) => setAgree(e.target.checked)}
               style={{ width: 18, height: 18 }}
+              required
             />
             <label htmlFor="agree" style={{ userSelect: "none" }}>
-              ยอมรับเงื่อนไขการรับประกัน <a href="/terms" target="_blank" rel="noreferrer">อ่านเงื่อนไข</a>
+              ยอมรับเงื่อนไขการรับประกัน{" "}
+              <span
+                onClick={() => setShowTerms(true)}
+                style={{ color: "#fe7300", cursor: "pointer", textDecoration: "underline" }}
+              >
+                (อ่านเงื่อนไข)
+              </span>
             </label>
           </div>
 
@@ -244,6 +254,66 @@ export default function WarrantyPage() {
           </div>
         </div>
       </form>
+
+      {/* ✅ Modal เงื่อนไข (สไตล์ inline เพื่อไม่ต้องแก้ CSS ไฟล์อื่น) */}
+      {showTerms && (
+        <div
+          onClick={() => setShowTerms(false)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,.45)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 60, padding: 16
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            role="dialog" aria-modal="true" aria-labelledby="termsTitle"
+            style={{
+              width: "min(760px, 100%)", background: "#fff", borderRadius: 16,
+              boxShadow: "0 10px 30px rgba(0,0,0,.25)", maxHeight: "90vh",
+              display: "flex", flexDirection: "column", overflow: "hidden"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: "1px solid #eee" }}>
+              <h3 id="termsTitle" style={{ margin: 0 }}>เงื่อนไขการรับประกัน</h3>
+              <button onClick={() => setShowTerms(false)} aria-label="Close" style={{ border: 0, background: "transparent", fontSize: 22, cursor: "pointer" }}>×</button>
+            </div>
+            <div style={{ padding: "14px 16px", overflow: "auto", lineHeight: 1.7 }}>
+              <p><strong>เงื่อนไขการรับประกัน</strong></p>
+              <ol>
+                <li>iLexXa รับประกันผลิตภัณฑ์ที่ซื้อในประเทศไทย โดยทั่วไป 1 ปี (บางรุ่น 6 เดือน) นับจากวันที่ซื้อ</li>
+                <li>รับประกันความเสียหายจากการผลิต/การใช้งานที่ถูกต้อง ต้องส่งสินค้าตรวจสอบกับบริษัทฯ ทุกครั้ง</li>
+                <li>หากเข้าเงื่อนไข บริษัทจะเปลี่ยนเฉพาะอุปกรณ์ที่เสีย โดยพิจารณาตามความเหมาะสม และอาจต้องมีการลงทะเบียน/ใบเสร็จสมบูรณ์</li>
+                <li>การรับประกันไม่ครอบคลุมวัสดุสิ้นเปลือง/อุปกรณ์เสริมบางชนิด</li>
+                <li>ความเสียหายจากการใช้งานผิดวิธี อุบัติเหตุ ภัยธรรมชาติ สัตว์/แมลง ฯลฯ อยู่นอกการรับประกัน</li>
+              </ol>
+
+              <p><strong>ข้อยกเว้นความคุ้มครอง</strong></p>
+              <ol>
+                <li>ใช้งานผิดวัตถุประสงค์/ฝ่าฝืนคำแนะนำ</li>
+                <li>ความเสียหายอันเนื่องจากน้ำ/สภาพอากาศ/การดัดแปลง/ซ่อมแซม/โปรแกรม</li>
+                <li>สงคราม จลาจล ก่อการร้าย คำสั่งของรัฐ ฯลฯ</li>
+                <li>ความสูญเสียจากอัคคีภัย/โจรกรรม</li>
+                <li>สึกหรอ เสื่อมสภาพ แมลง/สัตว์ทำลาย การทำความสะอาด/บูรณะ</li>
+                <li>ปฏิกิริยานิวเคลียร์/กัมมันตภาพรังสี</li>
+                <li>การกระทำโดยเจตนาหรือประมาทเลินเล่ออย่างร้ายแรง</li>
+                <li>การฉ้อโกง/ไม่ซื่อสัตย์</li>
+              </ol>
+
+              <p><strong>เงื่อนไขสิทธิประกันภัย</strong> ลูกค้าต้องลงทะเบียนภายใน 7 วันนับจากวันที่ซื้อสินค้า</p>
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", padding: "12px 16px", borderTop: "1px solid #eee" }}>
+              <button className="w-btn" onClick={() => setShowTerms(false)}>ปิด</button>
+              <button
+                className="w-btn w-btn-orange"
+                onClick={() => { setAgree(true); setShowTerms(false); }}
+              >
+                ยอมรับเงื่อนไข
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
