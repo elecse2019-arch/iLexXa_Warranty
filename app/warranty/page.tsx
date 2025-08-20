@@ -2,7 +2,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import Image from "next/image";
+import NextImage from "next/image";
 
 type FilePayload = { name: string; mimeType: string; content: string } | null;
 
@@ -120,7 +120,7 @@ export default function WarrantyPage() {
   return (
     <div className="warranty-wrap">
       <div className="warranty-hero">
-        <Image src="/warranty-header.png" alt="i LexXa" fill priority sizes="100vw" />
+        <NextImage src="/warranty-header.png" alt="i LexXa" fill priority sizes="100vw" />
       </div>
 
       <h1 className="warranty-title">ลงทะเบียนรับประกันสินค้า</h1>
